@@ -1,0 +1,35 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+aiofiles>=23.2.1
+
+# CV / Vision
+opencv-python-headless>=4.9.0
+ultralytics>=8.2.0
+Pillow>=10.0.0
+
+# OCR
+easyocr>=1.7.1
+paddlepaddle>=2.6.0
+paddleocr>=2.7.3
+
+# String matching
+rapidfuzz>=3.9.0
+
+# Speech recognition
+openai-whisper>=20231117
+
+# Transformers (zero-shot NLI + VLM + translation)
+transformers>=4.40.0
+accelerate>=0.29.0
+sentencepiece>=0.2.0
+huggingface-hub>=0.23.0
+
+# Data
+pandas>=2.2.0
+numpy>=1.26.0
+tqdm>=4.66.0
+
+# YOLO / Torch — installed separately with correct CUDA version
+# torch>=2.2.0
+# torchvision>=0.17.0

@@ -1,0 +1,942 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CricketLens — Match Review</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0: #0b0e14;
+    --bg-1: #11151d;
+    --bg-2: #171c27;
+    --bg-3: #1e2532;
+    --line: #242c3b;
+    --line-strong: #2f394d;
+    --text-0: #f3f5f9;
+    --text-1: #c8cfdc;
+    --text-2: #8b94a7;
+    --text-3: #5a6478;
+    --wicket: #f59e0b;       /* amber */
+    --wicket-soft: #f59e0b22;
+    --nearmiss: #38bdf8;     /* sky */
+    --nearmiss-soft: #38bdf822;
+    --good: #34d399;
+    --bad: #ef4444;
+    --accent: #a78bfa;
+    --radius: 10px;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #1a2236 0%, transparent 60%),
+      radial-gradient(900px 500px at 0% 100%, #14202a 0%, transparent 55%),
+      var(--bg-0);
+    color: var(--text-0);
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  ::selection { background: var(--wicket); color: var(--bg-0); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  #root { min-height: 100vh; }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+/* ─────────────────────────────────────────────────────────────
+   Mock match data — same shape as backend /api/events response
+   ───────────────────────────────────────────────────────────── */
+const MATCH_DURATION = 4 * 3600 + 12 * 60; // 4h 12m
+const MOCK_EVENTS = [
+  { type:"wicket", event_id:"W1", wicket_number:1, innings:1, innings_wicket:1, score:"42-1", over:"8.3",
+    delivery_ts_sec: 1823, card_ts_sec: 1851, batsman:"K. NISSANKA", runs:28, balls:34,
+    dismissal_mode:"caught", bowler:"SHAHEEN AFRIDI", fielder:"BABAR AZAM", confidence:0.97 },
+  { type:"near_miss", event_id:"NM1", innings:1, score:"58-1", over:"11.2",
+    delivery_ts_sec: 2410, sub_type:"dropped catch", batsman:"P. NISSANKA", bowler:"NASEEM SHAH", fielder:"RIZWAN", confidence:0.84 },
+  { type:"wicket", event_id:"W2", wicket_number:2, innings:1, innings_wicket:2, score:"71-2", over:"14.1",
+    delivery_ts_sec: 3015, card_ts_sec: 3047, batsman:"P. NISSANKA", runs:31, balls:42,
+    dismissal_mode:"bowled", bowler:"HARIS RAUF", fielder:null, confidence:0.99 },
+  { type:"wicket", event_id:"W3", wicket_number:3, innings:1, innings_wicket:3, score:"94-3", over:"19.5",
+    delivery_ts_sec: 4290, card_ts_sec: 4321, batsman:"K. MENDIS", runs:18, balls:21,
+    dismissal_mode:"lbw", bowler:"SHADAB KHAN", fielder:null, confidence:0.93 },
+  { type:"near_miss", event_id:"NM2", innings:1, score:"112-3", over:"23.4",
+    delivery_ts_sec: 5180, sub_type:"close lbw shout", batsman:"D. DE SILVA", bowler:"ABRAR AHMED", confidence:0.71 },
+  { type:"wicket", event_id:"W4", wicket_number:4, innings:1, innings_wicket:4, score:"148-4", over:"31.2",
+    delivery_ts_sec: 6920, card_ts_sec: 6951, batsman:"D. DE SILVA", runs:45, balls:62,
+    dismissal_mode:"caught", bowler:"SHAHEEN AFRIDI", fielder:"SAUD SHAKEEL", confidence:0.96 },
+  { type:"near_miss", event_id:"NM3", innings:1, score:"165-4", over:"34.5",
+    delivery_ts_sec: 7510, sub_type:"missed runout", batsman:"A. MATHEWS", bowler:"NASEEM SHAH", fielder:"RIZWAN", confidence:0.78 },
+  { type:"wicket", event_id:"W5", wicket_number:5, innings:1, innings_wicket:5, score:"201-5", over:"42.1",
+    delivery_ts_sec: 9240, card_ts_sec: 9268, batsman:"A. MATHEWS", runs:52, balls:78,
+    dismissal_mode:"caught", bowler:"HARIS RAUF", fielder:"BABAR AZAM", confidence:0.95 },
+  { type:"wicket", event_id:"W6", wicket_number:6, innings:2, innings_wicket:1, score:"23-1", over:"4.6",
+    delivery_ts_sec: 10840, card_ts_sec: 10872, batsman:"ABDULLAH SHAFIQUE", runs:11, balls:15,
+    dismissal_mode:"caught", bowler:"L. KUMARA", fielder:"KARUNARATNE", confidence:0.97 },
+  { type:"near_miss", event_id:"NM4", innings:2, score:"45-1", over:"9.3",
+    delivery_ts_sec: 11620, sub_type:"dropped catch", batsman:"BABAR AZAM", bowler:"A. FERNANDO", fielder:"MENDIS", confidence:0.81 },
+  { type:"wicket", event_id:"W7", wicket_number:7, innings:2, innings_wicket:2, score:"78-2", over:"15.4",
+    delivery_ts_sec: 12780, card_ts_sec: 12815, batsman:"IMAM-UL-HAQ", runs:32, balls:48,
+    dismissal_mode:"lbw", bowler:"P. JAYASURIYA", fielder:null, confidence:0.92 },
+  { type:"wicket", event_id:"W8", wicket_number:8, innings:2, innings_wicket:3, score:"131-3", over:"24.2",
+    delivery_ts_sec: 14380, card_ts_sec: 14409, batsman:"BABAR AZAM", runs:64, balls:91,
+    dismissal_mode:"caught", bowler:"P. JAYASURIYA", fielder:"DE SILVA", confidence:0.98 },
+];
+
+/* ─────────────────────────────────────────────────────────────
+   Helpers
+   ───────────────────────────────────────────────────────────── */
+const fmtTime = (sec) => {
+  if (sec == null) return "—";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return h > 0
+    ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+    : `${m}:${String(s).padStart(2,"0")}`;
+};
+const titleCase = (s) => s ? s.replace(/\b\w/g, c => c.toUpperCase()) : "";
+
+/* ─────────────────────────────────────────────────────────────
+   Header
+   ───────────────────────────────────────────────────────────── */
+function Header({ filename, status }) {
+  return (
+    <header style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "16px 28px", borderBottom: "1px solid var(--line)",
+      background: "rgba(11,14,20,0.7)", backdropFilter: "blur(12px)",
+      position: "sticky", top: 0, zIndex: 50,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{
+          width: 32, height: 32, borderRadius: 8,
+          background: "linear-gradient(135deg, #f59e0b 0%, #ea580c 100%)",
+          display: "grid", placeItems: "center", fontWeight: 700, color: "#0b0e14",
+          fontSize: 15, boxShadow: "0 4px 14px rgba(245,158,11,.35)",
+        }}>CL</div>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.01em" }}>CricketLens</div>
+          <div style={{ fontSize: 12, color: "var(--text-3)" }}>Match Review</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ fontSize: 13, color: "var(--text-2)" }} className="mono">
+          {filename}
+        </div>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "6px 12px", borderRadius: 999,
+          background: "var(--bg-2)", border: "1px solid var(--line)",
+        }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: 999,
+            background: status === "done" ? "var(--good)" : "var(--wicket)",
+            boxShadow: status === "done" ? "0 0 8px var(--good)" : "0 0 8px var(--wicket)",
+          }} />
+          <span style={{ fontSize: 12, color: "var(--text-1)", textTransform: "capitalize" }}>{status}</span>
+        </div>
+        <button style={btn("ghost")} onClick={() => window.location.reload()}>New upload</button>
+      </div>
+    </header>
+  );
+}
+
+const btn = (variant = "primary") => ({
+  appearance: "none", border: "1px solid transparent",
+  padding: "8px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500,
+  transition: "all 120ms ease",
+  ...(variant === "primary" ? {
+    background: "var(--wicket)", color: "#0b0e14", borderColor: "var(--wicket)",
+  } : variant === "ghost" ? {
+    background: "transparent", color: "var(--text-1)", borderColor: "var(--line)",
+  } : variant === "subtle" ? {
+    background: "var(--bg-2)", color: "var(--text-1)", borderColor: "var(--line)",
+  } : {}),
+});
+
+/* ─────────────────────────────────────────────────────────────
+   Upload screen
+   ───────────────────────────────────────────────────────────── */
+function UploadScreen({ onUpload }) {
+  const [drag, setDrag] = useState(false);
+  const inputRef = useRef(null);
+  const handleFile = (file) => {
+    if (!file) return;
+    onUpload(file);
+  };
+  return (
+    <div style={{
+      maxWidth: 720, margin: "80px auto", padding: "0 24px",
+    }}>
+      <div style={{ textAlign: "center", marginBottom: 36 }}>
+        <div style={{
+          fontSize: 13, color: "var(--text-3)", letterSpacing: "0.12em",
+          textTransform: "uppercase", marginBottom: 12,
+        }}>Step 1 of 2</div>
+        <h1 style={{
+          margin: 0, fontSize: 38, fontWeight: 600, letterSpacing: "-0.02em",
+        }}>Upload a match video</h1>
+        <p style={{ marginTop: 12, color: "var(--text-2)", fontSize: 15 }}>
+          We'll detect every wicket and near-miss and give you a clickable timeline.
+        </p>
+      </div>
+
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault(); setDrag(false);
+          handleFile(e.dataTransfer.files[0]);
+        }}
+        onClick={() => inputRef.current?.click()}
+        style={{
+          border: `2px dashed ${drag ? "var(--wicket)" : "var(--line-strong)"}`,
+          borderRadius: 14, padding: "60px 24px",
+          background: drag ? "var(--wicket-soft)" : "var(--bg-1)",
+          textAlign: "center", cursor: "pointer",
+          transition: "all 160ms ease",
+        }}
+      >
+        <div style={{
+          width: 56, height: 56, borderRadius: 14,
+          background: "var(--bg-3)", margin: "0 auto 18px",
+          display: "grid", placeItems: "center",
+          border: "1px solid var(--line-strong)",
+        }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 4v12m0-12l-4 4m4-4l4 4M4 20h16" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 500 }}>
+          Drop your video here, or <span style={{ color: "var(--wicket)" }}>click to browse</span>
+        </div>
+        <div style={{ marginTop: 10, color: "var(--text-3)", fontSize: 13 }} className="mono">
+          .mp4 · .mkv · .avi · .mov · .ts  —  up to 10 GB
+        </div>
+        <input
+          ref={inputRef} type="file" accept="video/*"
+          style={{ display: "none" }}
+          onChange={(e) => handleFile(e.target.files[0])}
+        />
+      </div>
+
+      <div style={{
+        marginTop: 28, display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14,
+      }}>
+        {[
+          { n:"01", t:"Scan", d:"YOLO + OCR detect score-strip and graphics every 2s" },
+          { n:"02", t:"Detect", d:"5-signal wicket detection, dismissal cards, commentary" },
+          { n:"03", t:"Review", d:"Clickable timeline with full event metadata" },
+        ].map((s) => (
+          <div key={s.n} style={{
+            padding: 16, borderRadius: 10,
+            background: "var(--bg-1)", border: "1px solid var(--line)",
+          }}>
+            <div className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8 }}>{s.n}</div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>{s.t}</div>
+            <div style={{ fontSize: 13, color: "var(--text-2)" }}>{s.d}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Processing screen — animated progress
+   ───────────────────────────────────────────────────────────── */
+function ProcessingScreen({ filename, onDone }) {
+  const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState("Uploading…");
+
+  useEffect(() => {
+    const phases = [
+      [0.08,  "Uploading video"],
+      [0.22,  "Phase 1: scanning frames"],
+      [0.45,  "Detecting wicket signals"],
+      [0.68,  "Phase 2: dismissal cards"],
+      [0.85,  "Phase 3: extracting names"],
+      [0.96,  "Analyzing commentary"],
+      [1.00,  "Done"],
+    ];
+    let i = 0;
+    const tick = () => {
+      if (i >= phases.length) { onDone(); return; }
+      const [p, label] = phases[i];
+      setProgress(p); setPhase(label);
+      i++;
+      setTimeout(tick, 700 + Math.random() * 600);
+    };
+    tick();
+  }, []);
+
+  return (
+    <div style={{ maxWidth: 600, margin: "120px auto", padding: "0 24px", textAlign: "center" }}>
+      <div style={{ position: "relative", width: 88, height: 88, margin: "0 auto 28px" }}>
+        <svg width="88" height="88" viewBox="0 0 88 88">
+          <circle cx="44" cy="44" r="38" fill="none" stroke="var(--bg-3)" strokeWidth="6" />
+          <circle cx="44" cy="44" r="38" fill="none" stroke="var(--wicket)" strokeWidth="6"
+            strokeDasharray={`${2*Math.PI*38}`}
+            strokeDashoffset={`${2*Math.PI*38*(1-progress)}`}
+            strokeLinecap="round"
+            transform="rotate(-90 44 44)"
+            style={{ transition: "stroke-dashoffset 600ms ease" }}
+          />
+        </svg>
+        <div style={{
+          position: "absolute", inset: 0, display: "grid", placeItems: "center",
+          fontWeight: 600, fontSize: 18,
+        }} className="mono">{Math.round(progress*100)}%</div>
+      </div>
+      <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>{phase}</h2>
+      <div className="mono" style={{ marginTop: 8, color: "var(--text-3)", fontSize: 13 }}>{filename}</div>
+      <div style={{
+        marginTop: 28, padding: "14px 18px",
+        background: "var(--bg-1)", border: "1px solid var(--line)",
+        borderRadius: 10, color: "var(--text-2)", fontSize: 13,
+      }}>
+        Heavy ML models — YOLO, OCR, Whisper — run on the backend. This usually takes 0.3-0.5× the video duration.
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Video player + timeline with markers
+   ───────────────────────────────────────────────────────────── */
+function VideoPlayer({ events, currentTime, setCurrentTime, duration, activeId, setActiveId, filter }) {
+  const [playing, setPlaying] = useState(true);
+  const [hoverEvent, setHoverEvent] = useState(null);
+  const [hoverX, setHoverX] = useState(null);
+  const trackRef = useRef(null);
+
+  // Mock playhead motion
+  useEffect(() => {
+    if (!playing) return;
+    const id = setInterval(() => {
+      setCurrentTime((t) => Math.min(t + 1, duration));
+    }, 1000 / 4); // 4× speed for prototype feel
+    return () => clearInterval(id);
+  }, [playing, duration, setCurrentTime]);
+
+  const visibleEvents = useMemo(
+    () => events.filter(e => filter === "all" ? true : filter === "wickets" ? e.type === "wicket" : e.type === "near_miss"),
+    [events, filter]
+  );
+
+  const seek = (e) => {
+    const r = trackRef.current.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    setCurrentTime(pct * duration);
+  };
+
+  const onMove = (e) => {
+    const r = trackRef.current.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    setHoverX(pct);
+    // find nearest event within 1.2% of bar
+    let nearest = null;
+    let bestDist = Infinity;
+    visibleEvents.forEach((ev) => {
+      const evPct = ev.delivery_ts_sec / duration;
+      const d = Math.abs(evPct - pct);
+      if (d < bestDist && d < 0.012) { bestDist = d; nearest = ev; }
+    });
+    setHoverEvent(nearest);
+  };
+  const onLeave = () => { setHoverEvent(null); setHoverX(null); };
+
+  return (
+    <div style={{
+      background: "#000", borderRadius: 14, overflow: "hidden",
+      border: "1px solid var(--line)", boxShadow: "var(--shadow-1)",
+    }}>
+      {/* Video frame placeholder */}
+      <div style={{
+        aspectRatio: "16/9", position: "relative",
+        background:
+          "linear-gradient(180deg, #0b1410 0%, #0e1a14 60%, #0a120e 100%)",
+        overflow: "hidden",
+      }}>
+        {/* Pitch suggestion — subtle stripes */}
+        <div style={{
+          position: "absolute", inset: 0, opacity: 0.10,
+          backgroundImage:
+            "repeating-linear-gradient(180deg, transparent 0 22px, rgba(255,255,255,0.5) 22px 23px)",
+        }} />
+        {/* Faux scoreboard */}
+        <div style={{
+          position: "absolute", left: 24, bottom: 60,
+          padding: "10px 14px", borderRadius: 8,
+          background: "rgba(11,14,20,0.85)", backdropFilter: "blur(6px)",
+          border: "1px solid var(--line)", display: "flex", gap: 14, alignItems: "center",
+        }} className="mono">
+          <div style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.1em" }}>SL vs PAK</div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>
+            {(() => {
+              // Find latest passed event for live score
+              const passed = events.filter(e => e.delivery_ts_sec <= currentTime).sort((a,b)=>b.delivery_ts_sec-a.delivery_ts_sec)[0];
+              return passed?.score || "0-0";
+            })()}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-2)" }}>
+            {(() => {
+              const passed = events.filter(e => e.delivery_ts_sec <= currentTime).sort((a,b)=>b.delivery_ts_sec-a.delivery_ts_sec)[0];
+              return passed ? `Over ${passed.over}` : "Over 0.0";
+            })()}
+          </div>
+        </div>
+        {/* Center play hint */}
+        <button
+          onClick={() => setPlaying(p => !p)}
+          aria-label={playing ? "Pause" : "Play"}
+          style={{
+            position: "absolute", top: "50%", left: "50%",
+            transform: "translate(-50%,-50%)",
+            width: 76, height: 76, borderRadius: 999,
+            background: "rgba(255,255,255,0.08)", backdropFilter: "blur(8px)",
+            border: "1px solid rgba(255,255,255,0.18)",
+            display: "grid", placeItems: "center",
+            opacity: playing ? 0 : 1,
+            transition: "opacity 200ms",
+          }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="white">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Controls + timeline */}
+      <div style={{ padding: "12px 16px 16px", background: "var(--bg-1)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
+          <button
+            onClick={() => setPlaying(p => !p)}
+            style={{
+              width: 36, height: 36, borderRadius: 999,
+              background: "var(--wicket)", border: "none",
+              display: "grid", placeItems: "center", color: "#0b0e14",
+            }}>
+            {playing ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="5" width="4" height="14" rx="1"/>
+                <rect x="14" y="5" width="4" height="14" rx="1"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+          <div className="mono" style={{ fontSize: 13, color: "var(--text-1)" }}>
+            {fmtTime(currentTime)} <span style={{ color: "var(--text-3)" }}>/ {fmtTime(duration)}</span>
+          </div>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => {
+              const next = visibleEvents.find(e => e.delivery_ts_sec > currentTime + 1);
+              if (next) { setCurrentTime(next.delivery_ts_sec); setActiveId(next.event_id); }
+            }}
+            style={btn("subtle")}>Jump to next event ↦</button>
+        </div>
+
+        {/* Timeline track */}
+        <div
+          ref={trackRef}
+          onMouseMove={onMove}
+          onMouseLeave={onLeave}
+          onClick={seek}
+          style={{
+            position: "relative", height: 48, paddingTop: 18,
+            cursor: "pointer", userSelect: "none",
+          }}
+        >
+          {/* Base bar */}
+          <div style={{
+            position: "absolute", left: 0, right: 0, top: 22, height: 6,
+            background: "var(--bg-3)", borderRadius: 999,
+          }} />
+          {/* Played portion */}
+          <div style={{
+            position: "absolute", left: 0, top: 22, height: 6,
+            width: `${(currentTime/duration)*100}%`,
+            background: "linear-gradient(90deg, #f59e0b 0%, #ea580c 100%)",
+            borderRadius: 999,
+            transition: "width 200ms linear",
+          }} />
+          {/* Markers */}
+          {visibleEvents.map((ev) => {
+            const left = (ev.delivery_ts_sec / duration) * 100;
+            const isActive = ev.event_id === activeId;
+            const color = ev.type === "wicket" ? "var(--wicket)" : "var(--nearmiss)";
+            return (
+              <button
+                key={ev.event_id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCurrentTime(ev.delivery_ts_sec);
+                  setActiveId(ev.event_id);
+                }}
+                aria-label={`${ev.type} at ${fmtTime(ev.delivery_ts_sec)}`}
+                style={{
+                  position: "absolute", top: 17, left: `${left}%`,
+                  transform: `translate(-50%, 0) ${isActive ? "scale(1.35)" : "scale(1)"}`,
+                  width: 16, height: 16, borderRadius: 999,
+                  background: color,
+                  border: `2px solid ${isActive ? "#fff" : "rgba(11,14,20,0.9)"}`,
+                  boxShadow: isActive
+                    ? `0 0 0 4px ${ev.type === "wicket" ? "var(--wicket-soft)" : "var(--nearmiss-soft)"}`
+                    : `0 2px 6px rgba(0,0,0,0.4)`,
+                  padding: 0, cursor: "pointer",
+                  transition: "transform 160ms ease, box-shadow 160ms",
+                  zIndex: isActive ? 3 : 2,
+                }}
+              />
+            );
+          })}
+          {/* Playhead */}
+          <div style={{
+            position: "absolute", left: `${(currentTime/duration)*100}%`,
+            top: 14, transform: "translateX(-50%)",
+            width: 2, height: 22,
+            background: "#fff", borderRadius: 2,
+            boxShadow: "0 0 0 1px rgba(0,0,0,0.5)",
+            pointerEvents: "none", zIndex: 4,
+          }} />
+          {/* Hover tooltip */}
+          {hoverX != null && hoverEvent && (
+            <div style={{
+              position: "absolute", left: `${hoverX*100}%`, bottom: 30,
+              transform: "translateX(-50%)",
+              background: "var(--bg-3)", border: "1px solid var(--line-strong)",
+              padding: "8px 12px", borderRadius: 8, whiteSpace: "nowrap",
+              fontSize: 12, pointerEvents: "none", zIndex: 5,
+              boxShadow: "var(--shadow-1)",
+            }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: 999,
+                  background: hoverEvent.type === "wicket" ? "var(--wicket)" : "var(--nearmiss)",
+                }} />
+                <span style={{ fontWeight: 600 }}>
+                  {hoverEvent.type === "wicket" ? `Wicket #${hoverEvent.wicket_number}` : "Near miss"}
+                </span>
+                <span className="mono" style={{ color: "var(--text-3)" }}>
+                  {fmtTime(hoverEvent.delivery_ts_sec)}
+                </span>
+              </div>
+              <div style={{ color: "var(--text-2)", marginTop: 2 }}>
+                {hoverEvent.batsman} · {titleCase(hoverEvent.dismissal_mode || hoverEvent.sub_type)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Active event side card
+   ───────────────────────────────────────────────────────────── */
+function EventDetailCard({ event, onClose, onPrev, onNext, hasPrev, hasNext }) {
+  if (!event) {
+    return (
+      <div style={{
+        height: "100%", padding: 24, borderRadius: 14,
+        background: "var(--bg-1)", border: "1px solid var(--line)",
+        display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center",
+        color: "var(--text-3)", textAlign: "center",
+      }}>
+        <div style={{
+          width: 48, height: 48, borderRadius: 12,
+          background: "var(--bg-3)", display: "grid", placeItems: "center",
+          marginBottom: 14, border: "1px solid var(--line)",
+        }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <div style={{ fontWeight: 500, color: "var(--text-1)" }}>No event selected</div>
+        <div style={{ fontSize: 13, marginTop: 6 }}>Click any marker on the timeline or a card below.</div>
+      </div>
+    );
+  }
+
+  const isWicket = event.type === "wicket";
+  const accent = isWicket ? "var(--wicket)" : "var(--nearmiss)";
+  const accentSoft = isWicket ? "var(--wicket-soft)" : "var(--nearmiss-soft)";
+
+  return (
+    <div style={{
+      borderRadius: 14, overflow: "hidden",
+      background: "var(--bg-1)", border: "1px solid var(--line)",
+      boxShadow: "var(--shadow-1)",
+    }}>
+      {/* Top accent bar */}
+      <div style={{
+        height: 4,
+        background: `linear-gradient(90deg, ${accent}, ${isWicket ? "#ea580c" : "#0ea5e9"})`,
+      }} />
+
+      <div style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "5px 10px", borderRadius: 999,
+            background: accentSoft, border: `1px solid ${accent}55`,
+            fontSize: 12, fontWeight: 600, color: accent, textTransform: "uppercase",
+            letterSpacing: "0.08em",
+          }}>
+            <span style={{
+              width: 7, height: 7, borderRadius: 999, background: accent,
+              boxShadow: `0 0 6px ${accent}`,
+            }} />
+            {isWicket ? `Wicket #${event.wicket_number}` : "Near miss"}
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            style={{
+              width: 28, height: 28, borderRadius: 6,
+              background: "transparent", border: "1px solid var(--line)",
+              display: "grid", placeItems: "center", color: "var(--text-2)",
+            }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>Batsman</div>
+        <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em", marginTop: 2 }}>
+          {event.batsman}
+        </div>
+        {event.runs != null && (
+          <div className="mono" style={{ fontSize: 13, color: "var(--text-2)", marginTop: 4 }}>
+            {event.runs} ({event.balls})
+          </div>
+        )}
+
+        {/* Dismissal mode big */}
+        <div style={{
+          marginTop: 18, padding: "14px 16px", borderRadius: 10,
+          background: "var(--bg-2)", border: "1px solid var(--line)",
+        }}>
+          <div style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
+            {isWicket ? "Dismissal" : "Type"}
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4, color: accent }}>
+            {titleCase(event.dismissal_mode || event.sub_type)}
+          </div>
+          {event.bowler && (
+            <div style={{ fontSize: 13, color: "var(--text-1)", marginTop: 8 }}>
+              <span style={{ color: "var(--text-3)" }}>b </span>{event.bowler}
+              {event.fielder && (
+                <>
+                  <br />
+                  <span style={{ color: "var(--text-3)" }}>c </span>{event.fielder}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Stats grid */}
+        <div style={{
+          marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1,
+          background: "var(--line)", border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden",
+        }}>
+          {[
+            ["Score", event.score],
+            ["Over", event.over],
+            ["Innings", event.innings],
+            ["Time", fmtTime(event.delivery_ts_sec)],
+          ].map(([k,v]) => (
+            <div key={k} style={{ padding: "12px 14px", background: "var(--bg-1)" }}>
+              <div style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>{k}</div>
+              <div className="mono" style={{ fontSize: 14, fontWeight: 600, marginTop: 3 }}>{v ?? "—"}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Confidence */}
+        {event.confidence != null && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-2)", marginBottom: 6 }}>
+              <span>Detection confidence</span>
+              <span className="mono" style={{ color: "var(--text-1)" }}>{(event.confidence*100).toFixed(0)}%</span>
+            </div>
+            <div style={{ height: 4, background: "var(--bg-3)", borderRadius: 999, overflow: "hidden" }}>
+              <div style={{
+                width: `${event.confidence*100}%`, height: "100%",
+                background: event.confidence > 0.9 ? "var(--good)" : event.confidence > 0.75 ? "var(--wicket)" : "var(--bad)",
+                borderRadius: 999, transition: "width 240ms",
+              }} />
+            </div>
+          </div>
+        )}
+
+        {/* Prev/Next */}
+        <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+          <button onClick={onPrev} disabled={!hasPrev} style={{
+            ...btn("subtle"), flex: 1, opacity: hasPrev ? 1 : 0.4, cursor: hasPrev ? "pointer" : "default",
+          }}>← Prev</button>
+          <button onClick={onNext} disabled={!hasNext} style={{
+            ...btn("subtle"), flex: 1, opacity: hasNext ? 1 : 0.4, cursor: hasNext ? "pointer" : "default",
+          }}>Next →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Filter pill bar
+   ───────────────────────────────────────────────────────────── */
+function FilterTabs({ value, onChange, counts }) {
+  const tabs = [
+    { id: "all",       label: "All events",  count: counts.all },
+    { id: "wickets",   label: "Wickets",     count: counts.wickets,   color: "var(--wicket)" },
+    { id: "near_miss", label: "Near misses", count: counts.near_miss, color: "var(--nearmiss)" },
+  ];
+  return (
+    <div style={{
+      display: "inline-flex", padding: 4, gap: 4,
+      background: "var(--bg-1)", border: "1px solid var(--line)",
+      borderRadius: 999,
+    }}>
+      {tabs.map((t) => {
+        const active = value === t.id;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 999,
+              background: active ? "var(--bg-3)" : "transparent",
+              border: "1px solid",
+              borderColor: active ? "var(--line-strong)" : "transparent",
+              color: active ? "var(--text-0)" : "var(--text-2)",
+              fontSize: 13, fontWeight: 500,
+              display: "flex", gap: 8, alignItems: "center",
+              transition: "all 140ms",
+            }}>
+            {t.color && (
+              <span style={{
+                width: 8, height: 8, borderRadius: 999, background: t.color,
+              }} />
+            )}
+            {t.label}
+            <span className="mono" style={{
+              fontSize: 11, color: active ? "var(--text-2)" : "var(--text-3)",
+            }}>{t.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Event card grid
+   ───────────────────────────────────────────────────────────── */
+function EventCard({ event, active, onClick }) {
+  const isWicket = event.type === "wicket";
+  const accent = isWicket ? "var(--wicket)" : "var(--nearmiss)";
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        textAlign: "left", padding: 16, borderRadius: 12,
+        background: active ? "var(--bg-2)" : "var(--bg-1)",
+        border: `1px solid ${active ? accent + "88" : "var(--line)"}`,
+        boxShadow: active ? `0 0 0 3px ${isWicket ? "var(--wicket-soft)" : "var(--nearmiss-soft)"}` : "none",
+        position: "relative", overflow: "hidden",
+        transition: "all 160ms ease",
+        cursor: "pointer",
+      }}
+      onMouseEnter={(e) => { if (!active) e.currentTarget.style.borderColor = "var(--line-strong)"; }}
+      onMouseLeave={(e) => { if (!active) e.currentTarget.style.borderColor = "var(--line)"; }}
+    >
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0, width: 3,
+        background: accent, opacity: active ? 1 : 0.6,
+      }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "3px 8px", borderRadius: 999,
+          background: isWicket ? "var(--wicket-soft)" : "var(--nearmiss-soft)",
+          color: accent, fontSize: 11, fontWeight: 600,
+          textTransform: "uppercase", letterSpacing: "0.08em",
+        }}>
+          {isWicket ? `W${event.wicket_number}` : "Near miss"}
+        </div>
+        <div className="mono" style={{ fontSize: 12, color: "var(--text-3)" }}>
+          {fmtTime(event.delivery_ts_sec)}
+        </div>
+      </div>
+      <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4, letterSpacing: "-0.01em" }}>
+        {event.batsman}
+      </div>
+      <div style={{ fontSize: 13, color: "var(--text-2)" }}>
+        {titleCase(event.dismissal_mode || event.sub_type)}
+        {event.bowler && <span style={{ color: "var(--text-3)" }}> · b {event.bowler}</span>}
+      </div>
+      <div style={{
+        marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--line)",
+        display: "flex", justifyContent: "space-between",
+      }} className="mono">
+        <span style={{ fontSize: 12, color: "var(--text-2)" }}>{event.score}</span>
+        <span style={{ fontSize: 12, color: "var(--text-3)" }}>Over {event.over}</span>
+      </div>
+    </button>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Main review screen
+   ───────────────────────────────────────────────────────────── */
+function ReviewScreen({ filename, events }) {
+  const [currentTime, setCurrentTime] = useState(0);
+  const [activeId, setActiveId] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const sortedEvents = useMemo(
+    () => [...events].sort((a,b) => a.delivery_ts_sec - b.delivery_ts_sec),
+    [events]
+  );
+
+  const visibleEvents = useMemo(() => {
+    if (filter === "all") return sortedEvents;
+    if (filter === "wickets") return sortedEvents.filter(e => e.type === "wicket");
+    return sortedEvents.filter(e => e.type === "near_miss");
+  }, [sortedEvents, filter]);
+
+  const counts = useMemo(() => ({
+    all: sortedEvents.length,
+    wickets: sortedEvents.filter(e => e.type === "wicket").length,
+    near_miss: sortedEvents.filter(e => e.type === "near_miss").length,
+  }), [sortedEvents]);
+
+  const activeEvent = useMemo(
+    () => sortedEvents.find(e => e.event_id === activeId) || null,
+    [sortedEvents, activeId]
+  );
+  const activeIdx = activeEvent ? visibleEvents.findIndex(e => e.event_id === activeEvent.event_id) : -1;
+
+  const goto = (delta) => {
+    const next = visibleEvents[activeIdx + delta];
+    if (next) { setActiveId(next.event_id); setCurrentTime(next.delivery_ts_sec); }
+  };
+
+  return (
+    <div>
+      <Header filename={filename} status="done" />
+      <main style={{ maxWidth: 1440, margin: "0 auto", padding: "20px 28px 60px" }}>
+        {/* Top: video + side card */}
+        <div style={{
+          display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px",
+          gap: 20, marginBottom: 28,
+        }}>
+          <VideoPlayer
+            events={sortedEvents}
+            currentTime={currentTime}
+            setCurrentTime={setCurrentTime}
+            duration={MATCH_DURATION}
+            activeId={activeId}
+            setActiveId={setActiveId}
+            filter={filter}
+          />
+          <EventDetailCard
+            event={activeEvent}
+            onClose={() => setActiveId(null)}
+            onPrev={() => goto(-1)}
+            onNext={() => goto(1)}
+            hasPrev={activeIdx > 0}
+            hasNext={activeIdx >= 0 && activeIdx < visibleEvents.length - 1}
+          />
+        </div>
+
+        {/* Filter row */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16,
+        }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>
+              All events
+            </h2>
+            <div style={{ fontSize: 13, color: "var(--text-3)", marginTop: 2 }}>
+              Click any card to jump the player to that moment.
+            </div>
+          </div>
+          <FilterTabs value={filter} onChange={setFilter} counts={counts} />
+        </div>
+
+        {/* Event grid */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+          gap: 12,
+        }}>
+          {visibleEvents.map((ev) => (
+            <EventCard
+              key={ev.event_id}
+              event={ev}
+              active={ev.event_id === activeId}
+              onClick={() => {
+                setActiveId(ev.event_id);
+                setCurrentTime(ev.delivery_ts_sec);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            />
+          ))}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   App
+   ───────────────────────────────────────────────────────────── */
+function App() {
+  // Skip straight to review for the prototype demo.
+  // (In real app: 'upload' → 'processing' → 'review')
+  const [stage, setStage] = useState("review");
+  const [filename, setFilename] = useState("SL_PAK_2025_T20I3.mp4");
+
+  if (stage === "upload") {
+    return (<>
+      <Header filename="—" status="idle" />
+      <UploadScreen onUpload={(f) => { setFilename(f.name); setStage("processing"); }} />
+    </>);
+  }
+  if (stage === "processing") {
+    return (<>
+      <Header filename={filename} status="processing" />
+      <ProcessingScreen filename={filename} onDone={() => setStage("review")} />
+    </>);
+  }
+  return <ReviewScreen filename={filename} events={MOCK_EVENTS} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+</body>
+</html>

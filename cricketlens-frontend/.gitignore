@@ -1,0 +1,35 @@
+# Dependencies
+node_modules
+package-lock.json
+yarn.lock
+
+# Production
+dist
+build
+
+
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+npm-debug.log*
+npm-error.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Misc
+.cache

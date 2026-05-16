@@ -1,32 +1,45 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { fmtTime, titleCase, btnStyle } from "../utils";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { formatTime } from "../utils.js";
 
 /**
- * Real <video> element + a custom timeline track with clickable markers.
- * Markers are positioned by `delivery_ts_sec / videoDuration`.
+ * VideoPlayer — custom-controls video backed by /api/video/{jobId}.
+ *
+ * videoRef: passed in from App so MatchTimeline and App can also access
+ *           the <video> element directly (seek, play, etc.).
+ * timeRef:  ref updated on timeupdate — read by MatchTimeline's rAF loop
+ *           without triggering re-renders.
  */
 export default function VideoPlayer({
-  videoUrl,
-  events,
-  filter,
-  activeId,
-  setActiveId,
-  seekRequest,         // { ts, nonce } — bumps when parent wants to jump
+  baseUrl,
+  jobId,
+  events = [],
+  activeEventId,
+  timeRef,
+  videoRef, // external ref — points at the <video> DOM node
 }) {
-  const videoRef = useRef(null);
-  const trackRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [hoverEvent, setHoverEvent] = useState(null);
-  const [hoverX, setHoverX] = useState(null);
+  const [speed, setSpeed] = useState(1);
+  const [volume, setVolume] = useState(1);
+  const [banner, setBanner] = useState(null);
+  const bannerTimer = useRef(null);
 
-  // Wire <video> events
+  // Use a relative path so video Range requests go through the Vite proxy
+  // (which injects the ngrok-skip-browser-warning header server-side).
+  // An absolute ngrok URL here would cause CORS on every Range request.
+  const videoSrc = jobId ? `/api/video/${jobId}` : null;
+
+  // Wire video events
   useEffect(() => {
-    const v = videoRef.current;
+    const v = videoRef?.current;
     if (!v) return;
     const onMeta = () => setDuration(v.duration || 0);
-    const onTime = () => setCurrentTime(v.currentTime || 0);
+    const onTime = () => {
+      const t = v.currentTime || 0;
+      setCurrentTime(t);
+      if (timeRef) timeRef.current = t;
+    };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
     v.addEventListener("loadedmetadata", onMeta);
@@ -39,249 +52,338 @@ export default function VideoPlayer({
       v.removeEventListener("play", onPlay);
       v.removeEventListener("pause", onPause);
     };
-  }, [videoUrl]);
+  }, [videoSrc, videoRef, timeRef]);
 
-  // External seek requests
+  // Keyboard shortcut: Space = play/pause
   useEffect(() => {
-    if (!seekRequest || !videoRef.current) return;
-    videoRef.current.currentTime = Math.max(0, seekRequest.ts - 1.5); // start just before
-    videoRef.current.play().catch(() => {});
-  }, [seekRequest]);
-
-  const visibleEvents = useMemo(
-    () =>
-      events.filter((e) =>
-        filter === "all" ? true : filter === "wickets" ? e.type === "wicket" : e.type === "near_miss"
-      ),
-    [events, filter]
-  );
-
-  const seekToPct = (clientX) => {
-    if (!duration) return;
-    const r = trackRef.current.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-    if (videoRef.current) videoRef.current.currentTime = pct * duration;
-  };
-
-  const onMove = (e) => {
-    if (!duration) return;
-    const r = trackRef.current.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-    setHoverX(pct);
-    let nearest = null;
-    let bestDist = Infinity;
-    visibleEvents.forEach((ev) => {
-      const evPct = ev.delivery_ts_sec / duration;
-      const d = Math.abs(evPct - pct);
-      if (d < bestDist && d < 0.012) {
-        bestDist = d;
-        nearest = ev;
+    const onKey = (e) => {
+      if (
+        e.code === "Space" &&
+        !["INPUT", "TEXTAREA"].includes(e.target.tagName)
+      ) {
+        e.preventDefault();
+        togglePlay();
       }
-    });
-    setHoverEvent(nearest);
-  };
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Show event banner whenever activeEventId changes
+  useEffect(() => {
+    if (!activeEventId || !events.length) return;
+    const ev = events.find((e) => e.event_id === activeEventId);
+    if (!ev) return;
+    let text;
+    if (ev.type === "wicket") {
+      text = `W${ev.wicket_number || ""} — ${ev.batsman || ""}  ${ev.dismissal_mode || ""}  ${ev.score || ""}  ov ${ev.over || ""}`;
+    } else {
+      const nmFormatted = (ev.nm_type || "")
+        .replace(/^near_miss_/, "")
+        .replace(/_/g, " ");
+      text = `NM — ${ev.label || ev.event_id}  ${nmFormatted}`;
+    }
+    clearTimeout(bannerTimer.current);
+    setBanner({ text, key: Date.now() });
+    bannerTimer.current = setTimeout(() => setBanner(null), 3200);
+    return () => clearTimeout(bannerTimer.current);
+  }, [activeEventId, events]);
 
   const togglePlay = () => {
-    const v = videoRef.current;
+    const v = videoRef?.current;
     if (!v) return;
-    if (v.paused) v.play();
-    else v.pause();
+    v.paused ? v.play().catch(() => {}) : v.pause();
   };
 
-  const jumpToNext = () => {
-    const next = visibleEvents.find((e) => e.delivery_ts_sec > currentTime + 1);
-    if (next && videoRef.current) {
-      videoRef.current.currentTime = next.delivery_ts_sec - 1.5;
-      videoRef.current.play().catch(() => {});
-      setActiveId(next.event_id);
-    }
+  const handleScrubberClick = (e) => {
+    if (!duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (videoRef?.current) videoRef.current.currentTime = pct * duration;
   };
+
+  const handleSpeed = (s) => {
+    setSpeed(s);
+    if (videoRef?.current) videoRef.current.playbackRate = s;
+  };
+
+  const handleVolume = (e) => {
+    const v = parseFloat(e.target.value);
+    setVolume(v);
+    if (videoRef?.current) videoRef.current.volume = v;
+  };
+
+  const handleFullscreen = () => {
+    const v = videoRef?.current;
+    if (!v) return;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else v.requestFullscreen?.();
+  };
+
+  const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  // Event tick marks on scrubber
+  // Defensive: ensure events is an array before mapping
+  const eventsArray = Array.isArray(events) ? events : [];
+  const tickMarks =
+    duration > 0 && eventsArray.length > 0
+      ? eventsArray.map((ev) => ({
+          left: ((ev.ts_sec ?? 0) / duration) * 100,
+          isWicket: ev.type === "wicket",
+          id: ev.event_id,
+        }))
+      : [];
 
   return (
     <div
       style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
         background: "#000",
-        borderRadius: 14,
-        overflow: "hidden",
-        border: "1px solid var(--line)",
-        boxShadow: "var(--shadow-1)",
       }}
     >
-      <div style={{ aspectRatio: "16/9", background: "#000" }}>
-        <video
-          ref={videoRef}
-          src={videoUrl}
-          style={{ width: "100%", height: "100%", display: "block", objectFit: "contain", background: "#000" }}
-          onClick={togglePlay}
-        />
-      </div>
+      {/* The actual video element */}
+      <video
+        ref={videoRef}
+        src={videoSrc || undefined}
+        crossOrigin="anonymous"
+        style={{ width: "100%", height: "100%", objectFit: "contain" }}
+        onClick={togglePlay}
+      />
 
-      <div style={{ padding: "12px 16px 16px", background: "var(--bg-1)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-          <button
-            onClick={togglePlay}
-            aria-label={playing ? "Pause" : "Play"}
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 999,
-              background: "var(--wicket)",
-              border: "none",
-              display: "grid",
-              placeItems: "center",
-              color: "#0b0e14",
-            }}
-          >
-            {playing ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            )}
-          </button>
-          <div className="mono" style={{ fontSize: 13, color: "var(--text-1)" }}>
-            {fmtTime(currentTime)} <span style={{ color: "var(--text-3)" }}>/ {fmtTime(duration)}</span>
-          </div>
-          <div style={{ flex: 1 }} />
-          <button onClick={jumpToNext} style={btnStyle("subtle")}>
-            Jump to next event ↦
-          </button>
-        </div>
-
+      {/* Placeholder when no URL is configured */}
+      {!videoSrc && (
         <div
-          ref={trackRef}
-          onMouseMove={onMove}
-          onMouseLeave={() => {
-            setHoverEvent(null);
-            setHoverX(null);
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#4a5568",
+            fontSize: 14,
           }}
-          onClick={(e) => seekToPct(e.clientX)}
-          style={{ position: "relative", height: 48, paddingTop: 18, cursor: "pointer", userSelect: "none" }}
         >
+          Set backend URL to load video
+        </div>
+      )}
+
+      {/* Event banner — top-centre, pointer-events-none */}
+      {banner && (
+        <div
+          key={banner.key}
+          className="banner-anim font-mono"
+          style={{
+            position: "absolute",
+            top: 14,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "rgba(0,0,0,0.78)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 8,
+            padding: "8px 18px",
+            fontSize: 13,
+            color: "#e2e8f0",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          {banner.text}
+        </div>
+      )}
+
+      {/* Controls overlay — bottom gradient */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          background:
+            "linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.5) 60%, transparent 100%)",
+          padding: "16px 14px 10px",
+        }}
+      >
+        {/* Scrubber track */}
+        <div
+          id="video-scrubber"
+          onClick={handleScrubberClick}
+          style={{
+            position: "relative",
+            height: 22,
+            cursor: "pointer",
+            marginBottom: 8,
+          }}
+        >
+          {/* Track background */}
           <div
             style={{
               position: "absolute",
+              top: "50%",
               left: 0,
               right: 0,
-              top: 22,
-              height: 6,
-              background: "var(--bg-3)",
-              borderRadius: 999,
+              height: 4,
+              background: "rgba(255,255,255,0.15)",
+              borderRadius: 2,
+              transform: "translateY(-50%)",
             }}
           />
+
+          {/* Watched fill */}
           <div
             style={{
               position: "absolute",
+              top: "50%",
               left: 0,
-              top: 22,
-              height: 6,
-              width: duration ? `${(currentTime / duration) * 100}%` : 0,
-              background: "linear-gradient(90deg, #f59e0b 0%, #ea580c 100%)",
-              borderRadius: 999,
+              height: 4,
+              width: `${progressPct}%`,
+              background: "rgba(34,197,94,0.5)",
+              borderRadius: 2,
+              transform: "translateY(-50%)",
               transition: "width 200ms linear",
             }}
           />
 
-          {duration > 0 &&
-            visibleEvents.map((ev) => {
-              const left = (ev.delivery_ts_sec / duration) * 100;
-              const isActive = ev.event_id === activeId;
-              const color = ev.type === "wicket" ? "var(--wicket)" : "var(--nearmiss)";
-              return (
-                <button
-                  key={ev.event_id}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveId(ev.event_id);
-                    if (videoRef.current) {
-                      videoRef.current.currentTime = Math.max(0, ev.delivery_ts_sec - 1.5);
-                      videoRef.current.play().catch(() => {});
-                    }
-                  }}
-                  aria-label={`${ev.type} at ${fmtTime(ev.delivery_ts_sec)}`}
-                  style={{
-                    position: "absolute",
-                    top: 17,
-                    left: `${left}%`,
-                    transform: `translate(-50%, 0) ${isActive ? "scale(1.35)" : "scale(1)"}`,
-                    width: 16,
-                    height: 16,
-                    borderRadius: 999,
-                    background: color,
-                    border: `2px solid ${isActive ? "#fff" : "rgba(11,14,20,0.9)"}`,
-                    boxShadow: isActive
-                      ? `0 0 0 4px ${ev.type === "wicket" ? "var(--wicket-soft)" : "var(--nearmiss-soft)"}`
-                      : `0 2px 6px rgba(0,0,0,0.4)`,
-                    padding: 0,
-                    cursor: "pointer",
-                    transition: "transform 160ms ease, box-shadow 160ms",
-                    zIndex: isActive ? 3 : 2,
-                  }}
-                />
-              );
-            })}
-
-          {duration > 0 && (
+          {/* Event tick marks */}
+          {tickMarks.map((t) => (
             <div
+              key={t.id}
               style={{
                 position: "absolute",
-                left: `${(currentTime / duration) * 100}%`,
-                top: 14,
-                transform: "translateX(-50%)",
+                top: "50%",
+                left: `${t.left}%`,
+                transform: "translate(-50%, -50%)",
                 width: 2,
-                height: 22,
-                background: "#fff",
-                borderRadius: 2,
-                boxShadow: "0 0 0 1px rgba(0,0,0,0.5)",
+                height: 11,
+                background: t.isWicket ? "#ef4444" : "#f59e0b",
+                borderRadius: 1,
                 pointerEvents: "none",
-                zIndex: 4,
+                opacity: 0.85,
               }}
             />
-          )}
+          ))}
 
-          {hoverX != null && hoverEvent && (
-            <div
+          {/* Playhead thumb */}
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: `${progressPct}%`,
+              transform: "translate(-50%, -50%)",
+              width: 13,
+              height: 13,
+              borderRadius: "50%",
+              background: "#fff",
+              pointerEvents: "none",
+              boxShadow: "0 0 0 2px rgba(0,0,0,0.4)",
+            }}
+          />
+        </div>
+
+        {/* Controls row */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* Play / Pause */}
+          <button
+            id="video-play-btn"
+            onClick={togglePlay}
+            aria-label={playing ? "Pause" : "Play"}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "#fff",
+              cursor: "pointer",
+              padding: 0,
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            {playing ? (
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="white">
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+            ) : (
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="white">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+
+          {/* Time */}
+          <div
+            className="font-mono"
+            style={{ fontSize: 12, color: "#e2e8f0", whiteSpace: "nowrap" }}
+          >
+            {formatTime(currentTime)}
+            <span style={{ color: "#4a5568" }}> / {formatTime(duration)}</span>
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          {/* Speed buttons */}
+          {[0.5, 1, 1.5, 2].map((s) => (
+            <button
+              key={s}
+              onClick={() => handleSpeed(s)}
               style={{
-                position: "absolute",
-                left: `${hoverX * 100}%`,
-                bottom: 30,
-                transform: "translateX(-50%)",
-                background: "var(--bg-3)",
-                border: "1px solid var(--line-strong)",
-                padding: "8px 12px",
-                borderRadius: 8,
-                whiteSpace: "nowrap",
-                fontSize: 12,
-                pointerEvents: "none",
-                zIndex: 5,
-                boxShadow: "var(--shadow-1)",
+                padding: "2px 7px",
+                borderRadius: 4,
+                background:
+                  speed === s ? "rgba(255,255,255,0.2)" : "transparent",
+                border: `1px solid ${speed === s ? "rgba(255,255,255,0.35)" : "transparent"}`,
+                color: speed === s ? "#fff" : "#6b7280",
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "'JetBrains Mono', monospace",
+                transition: "all 100ms",
               }}
             >
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 999,
-                    background: hoverEvent.type === "wicket" ? "var(--wicket)" : "var(--nearmiss)",
-                  }}
-                />
-                <span style={{ fontWeight: 600 }}>
-                  {hoverEvent.type === "wicket" ? `Wicket #${hoverEvent.wicket_number}` : "Near miss"}
-                </span>
-                <span className="mono" style={{ color: "var(--text-3)" }}>
-                  {fmtTime(hoverEvent.delivery_ts_sec)}
-                </span>
-              </div>
-              <div style={{ color: "var(--text-2)", marginTop: 2 }}>
-                {hoverEvent.batsman} · {titleCase(hoverEvent.dismissal_mode || hoverEvent.sub_type)}
-              </div>
-            </div>
-          )}
+              {s}×
+            </button>
+          ))}
+
+          {/* Volume */}
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            onChange={handleVolume}
+            className="volume-slider"
+            aria-label="Volume"
+            style={{ width: 68, height: 3, accentColor: "#22c55e" }}
+          />
+
+          {/* Fullscreen */}
+          <button
+            id="video-fullscreen-btn"
+            onClick={handleFullscreen}
+            aria-label="Fullscreen"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "#94a3b8",
+              cursor: "pointer",
+              padding: 0,
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>

@@ -16,10 +16,18 @@ for d in [UPLOADS_DIR, JOBS_DIR, MODELS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ── YOLO ───────────────────────────────────────────────────────────────────────
-YOLO_MODEL_PATH = Path(os.getenv(
-    "YOLO_MODEL_PATH",
-    str(MODELS_DIR / "cricket_v3_yolov8s" / "weights" / "best.pt"),
-))
+# Try environment variable first, then look for model in Dataset folder, then fall back to local models
+_default_yolo_path = None
+if not os.getenv("YOLO_MODEL_PATH"):
+    # Try absolute path in Dataset folder (CricVision project structure)
+    dataset_path = Path(__file__).parent.parent / "Dataset" / "yolo_region_detection" / "models" / "cricket_v3_yolov8s" / "weights" / "best.pt"
+    if dataset_path.exists():
+        _default_yolo_path = str(dataset_path)
+    else:
+        # Fall back to local models directory
+        _default_yolo_path = str(MODELS_DIR / "cricket_v3_yolov8s" / "weights" / "best.pt")
+
+YOLO_MODEL_PATH = Path(os.getenv("YOLO_MODEL_PATH", _default_yolo_path))
 YOLO_CONF_THRESHOLD = 0.35
 YOLO_CLASSES = {
     0 : "boundary_graphic",

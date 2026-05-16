@@ -65,6 +65,19 @@ init_router(job_store)
 app.include_router(api_router)
 
 
+# ── Global exception handler ──────────────────────────────────────────────────
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    log.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}", "type": exc.__class__.__name__},
+    )
+
+
 # ── Startup / shutdown hooks ──────────────────────────────────────────────────
 @app.on_event("startup")
 async def on_startup():
@@ -81,7 +94,16 @@ async def on_shutdown():
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])
 def health():
-    return {"status": "ok"}
+    busy = any(
+        j.get("status") == "processing"
+        for j in job_store.all()
+    )
+    return {
+        "status"  : "ok",
+        "busy"    : busy,
+        "jobs"    : len(job_store.all()),
+        "platform": "standalone",
+    }
 
 
 @app.get("/", tags=["system"])

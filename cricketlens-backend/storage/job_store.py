@@ -52,8 +52,12 @@ class Job:
 
         # Parsed result for API response
         self.events        : Optional[list] = None   # List[EventSchema]
+        self.duration_sec  : float = 0.0             # video duration in seconds
 
     def to_dict(self) -> dict:
+        events = self.events or []
+        wicket_count = sum(1 for e in events if e.get("type") == "wicket")
+        nm_count     = sum(1 for e in events if e.get("type") == "near_miss")
         return {
             "job_id"          : self.job_id,
             "filename"        : self.filename,
@@ -62,12 +66,16 @@ class Job:
             "message"         : self.message,
             "error"           : self.error,
             "created"         : self.created,
+            "created_at"      : self.created,   # alias for frontend compat
             "updated"         : self.updated,
             "video_path"      : self.video_path,
             "phase1_csv"      : self.phase1_csv,
             "phase2_csv"      : self.phase2_csv,
             "final_csv"       : self.final_csv,
             "commentary_csv"  : self.commentary_csv,
+            "duration_sec"    : self.duration_sec,
+            "wicket_count"    : wicket_count,
+            "nm_count"        : nm_count,
             "events"          : self.events,
         }
 
@@ -86,6 +94,7 @@ class Job:
         j.final_csv      = d.get("final_csv")
         j.commentary_csv = d.get("commentary_csv")
         j.events         = d.get("events")
+        j.duration_sec   = d.get("duration_sec", 0.0)
         return j
 
 
@@ -124,6 +133,9 @@ class JobStore:
         with self._lock:
             for k, v in kwargs.items():
                 if hasattr(job, k):
+                    # Convert string status to JobStatus enum if needed
+                    if k == "status" and isinstance(v, str):
+                        v = JobStatus(v)
                     setattr(job, k, v)
             job.updated = datetime.utcnow().isoformat()
         self._persist()

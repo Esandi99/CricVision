@@ -16,6 +16,7 @@ from typing import Optional
 import cv2
 
 from config import AUDIO_SAMPLE_RATE
+from storage.job_store import JobStatus
 from pipeline.phase1_scan import run_phase1
 from pipeline.events import extract_wicket_events
 from pipeline.phase2_cards import run_phase2
@@ -51,7 +52,7 @@ def run_full_pipeline(
         log.info("[%s] %.0f%%  %s", match_id, fraction * 100, message)
 
     try:
-        job_store.update(job, status="processing", message="Initialising…")
+        job_store.update(job, status=JobStatus.PROCESSING, message="Initialising…")
 
         # ── 0. Video metadata ──────────────────────────────────────────────────
         _progress(0.01, "Reading video metadata…")
@@ -63,8 +64,12 @@ def run_full_pipeline(
         if fps <= 0 or total_frames <= 0:
             raise ValueError(f"Cannot read video metadata from {video_path}")
 
+        duration_sec = total_frames / fps
         log.info("Video: fps=%.2f  frames=%d  duration=%.0fs",
-                 fps, total_frames, total_frames / fps)
+                 fps, total_frames, duration_sec)
+
+        # Store duration immediately so SSE stream has it
+        job_store.update(job, duration_sec=duration_sec)
 
         # ── 1. Broadcaster detection ───────────────────────────────────────────
         _progress(0.03, "Detecting broadcaster layout…")
@@ -139,14 +144,17 @@ def run_full_pipeline(
 
         # ── 7. Build frontend event list ───────────────────────────────────────
         _progress(0.97, "Building event timeline…")
-        events = _build_event_list(df_final, df_phase2)
+        # Near-miss CSV path (produced by commentary stage when it runs)
+        nm_csv = str(job_dir / f"{match_id}_near_miss_commentary.csv")
+        events = _build_event_list(df_final, df_phase2, nm_csv, duration_sec)
 
         job_store.update(
             job,
-            status="done",
+            status=JobStatus.DONE,
             progress=1.0,
             message=f"Done — {len(events)} events detected",
             events=events,
+            duration_sec=duration_sec,
         )
         log.info("[%s] Pipeline complete.  %d events.", match_id, len(events))
 
@@ -154,7 +162,7 @@ def run_full_pipeline(
         log.exception("[%s] Pipeline failed: %s", match_id, exc)
         job_store.update(
             job,
-            status="error",
+            status=JobStatus.ERROR,
             message=f"Pipeline failed: {exc}",
             error=str(exc),
         )
@@ -186,22 +194,22 @@ def _apply_commentary_fallback(df_final, df_comm):
     return df_final
 
 
-def _build_event_list(df_final, df_phase2) -> list:
+def _build_event_list(df_final, df_phase2,
+                      nm_csv: str = "",
+                      duration_sec: float = 0.0) -> list:
     """
-    Convert the final wickets DataFrame into a list of event dicts.
+    Convert the final wickets DataFrame + optional near-miss CSV into a list
+    of event dicts ready for the frontend.
 
-    Each event has the fields the frontend needs to render a timeline
-    marker and an info panel:
-
+    Field names follow what the React frontend expects:
+        ts_sec          float  — when the delivery was bowled
+        ts_end_sec      float  — approx end of the replay window (ts+70s)
+        event_id        str
         type            "wicket" | "near_miss"
-        event_id        unique string
-        wicket_number   int
         innings         int
         innings_wicket  int
         score           "72-3" style string
         over            "15.4" style string or ""
-        delivery_ts_sec float — when the ball was bowled
-        card_ts_sec     float | null — when the card appeared
         batsman         str
         runs            int | null
         balls           int | null
@@ -214,6 +222,8 @@ def _build_event_list(df_final, df_phase2) -> list:
     """
     import pandas as pd
     events = []
+
+    # ── Wicket events ─────────────────────────────────────────────────────────
     for _, row in df_final.iterrows():
         wkt_num = int(row["wicket_number"])
         p2      = df_phase2[df_phase2["wicket_number"] == wkt_num]
@@ -221,15 +231,22 @@ def _build_event_list(df_final, df_phase2) -> list:
         if not p2.empty and pd.notna(p2.iloc[0].get("card_ts_sec")):
             card_ts = float(p2.iloc[0]["card_ts_sec"])
 
+        innings        = int(row["innings"])
+        innings_wicket = int(row["innings_wicket"])
+        ts_sec         = float(row["delivery_ts_sec"])
+
         events.append({
             "type"             : "wicket",
-            "event_id"         : f"W{wkt_num}",
+            "event_id"         : f"W{innings}-{innings_wicket}",
             "wicket_number"    : wkt_num,
-            "innings"          : int(row["innings"]),
-            "innings_wicket"   : int(row["innings_wicket"]),
+            "innings"          : innings,
+            "innings_wicket"   : innings_wicket,
             "score"            : str(row.get("score", "")),
             "over"             : str(row.get("over", "")),
-            "delivery_ts_sec"  : float(row["delivery_ts_sec"]),
+            # ── frontend expects ts_sec / ts_end_sec ──
+            "ts_sec"           : ts_sec,
+            "ts_end_sec"       : min(ts_sec + 70.0,
+                                     duration_sec if duration_sec > 0 else ts_sec + 70.0),
             "card_ts_sec"      : card_ts,
             "batsman"          : str(row.get("batsman", "")) or "",
             "runs"             : (int(row["runs"])
@@ -244,4 +261,50 @@ def _build_event_list(df_final, df_phase2) -> list:
             "confidence"       : float(row.get("mode_confidence", 0)),
         })
 
+    # ── Near-miss events (from commentary NM CSV if it exists) ────────────────
+    import os, re as _re
+    if nm_csv and os.path.exists(nm_csv):
+        try:
+            df_nm = pd.read_csv(nm_csv)
+            for i, row in df_nm.iterrows():
+                lbl = str(row.get("label", f"NM{i+1}"))
+                inn = 2 if lbl.startswith("Inn2") else 1
+                nm_n = i + 1
+                m = _re.search(r"NM(\d+)", lbl)
+                if m:
+                    nm_n = int(m.group(1))
+
+                def _ts(v):
+                    try:
+                        p = [float(x) for x in str(v).strip().split(":")]
+                        if len(p) == 3: return p[0]*3600 + p[1]*60 + p[2]
+                        if len(p) == 2: return p[0]*60 + p[1]
+                        return float(p[0])
+                    except:
+                        return 0.0
+
+                ts0 = max(0.0, _ts(row.get("event_start", "0:00")) - 5)
+                ts1 = _ts(row.get("event_end",   "0:00"))
+                if ts1 <= ts0:
+                    ts1 = ts0 + 30.0
+
+                events.append({
+                    "type"             : "near_miss",
+                    "event_id"         : f"NM{inn}_{nm_n}",
+                    "innings"          : inn,
+                    "nm_number"        : nm_n,
+                    "label"            : lbl,
+                    "ts_sec"           : ts0,
+                    "ts_end_sec"       : ts1 + 10.0,
+                    "nm_type"          : str(row.get("med_consensus", "")),
+                    "fielding_position": str(row.get("fielding_position", "")),
+                    "has_appeal"       : bool(row.get("has_appeal", False)),
+                    "has_not_out"      : bool(row.get("has_not_out", False)),
+                    "confidence"       : float(row.get("med_zs_conf", 0.0)),
+                    "transcript"       : str(row.get("med_transcript", ""))[:300],
+                })
+        except Exception as exc:
+            log.warning("Could not load near-miss CSV (%s): %s", nm_csv, exc)
+
+    events.sort(key=lambda e: e["ts_sec"])
     return events
